@@ -197,7 +197,8 @@ export class AwsClient extends InfraWalletClient {
         Filter: filterExpression,
         GroupBy: [
           { Type: GroupDefinitionType.DIMENSION, Key: Dimension.LINKED_ACCOUNT },
-          { Type: GroupDefinitionType.DIMENSION, Key: Dimension.SERVICE },
+          // { Type: GroupDefinitionType.DIMENSION, Key: Dimension.SERVICE },
+          { Type: GroupDefinitionType.TAG, Key: 'system' },
         ],
         Metrics: ['UnblendedCost'],
         NextPageToken: nextPageToken,
@@ -233,6 +234,9 @@ export class AwsClient extends InfraWalletClient {
       tagKeyValues[k.trim()] = v.trim();
     });
 
+    // Get group tags configuration
+    const groupTags = integrationConfig.getOptionalStringArray('groupTags') || ['system'];
+
     const transformedData = reduce(
       costResponse,
       (accumulator: { [key: string]: Report }, row) => {
@@ -254,19 +258,40 @@ export class AwsClient extends InfraWalletClient {
               return;
             }
 
-            const serviceName = group.Keys ? group.Keys[1] : '';
-            const keyName = `${accountId}_${serviceName}`;
+            // Handle all group tags in the response
+            const tagValues: { [key: string]: string } = {};
+            if (group.Keys && group.Keys.length > 1) {
+              // First key is the account ID, subsequent keys are the tag values
+              for (let i = 1; i < group.Keys.length; i++) {
+                if (i - 1 < groupTags.length) {
+                  const tagKey = groupTags[i - 1];
+                  const tagValue = group.Keys[i] || 'undefined';
+                  tagValues[tagKey] = tagValue;
+                }
+              }
+            }
+
+            // Create a unique key combining account and tag values
+            const keyParts = [accountId];
+            for (const tagKey of groupTags) {
+              keyParts.push(tagValues[tagKey] || 'undefined');
+            }
+            const keyName = keyParts.join('_');
 
             if (!accumulator[keyName]) {
               accumulator[keyName] = {
                 id: keyName,
                 account: `${this.provider}/${accountName} (${accountId})`,
-                service: this.convertServiceName(serviceName),
-                category: categoryMappingService.getCategoryByServiceName(this.provider, serviceName),
+                service: this.convertServiceName(tagValues[groupTags[0]] || 'undefined'),
+                category: categoryMappingService.getCategoryByServiceName(
+                  this.provider,
+                  tagValues[groupTags[0]] || 'undefined',
+                ),
                 provider: this.provider,
                 providerType: PROVIDER_TYPE.INTEGRATION,
                 reports: {},
                 ...tagKeyValues,
+                ...tagValues, // Add all group tag values to the report
               };
             }
 
